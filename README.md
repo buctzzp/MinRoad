@@ -7,7 +7,7 @@
 ```
 .
 ├── main.py              # 主程序入口，包含所有功能实现
-├── example_graph.json   # 保存的示例图结构文件，包含节点、边及权重信息
+├── Graph.json   # 保存的示例图结构文件，包含节点、边及权重信息
 ```
 
 ## 环境依赖
@@ -26,7 +26,7 @@ pip install pyqt5 networkx
 
 1. **运行程序**  
    ```bash
-   python main.py example_graph.json
+   python main.py Graph.json
    ```
    如果不指定图文件，将使用内置的示例图。
 
@@ -42,11 +42,7 @@ pip install pyqt5 networkx
 ## 示例
 
 ```bash
-python main.py example_graph.json
+python main.py Graph.json
 ```
 
 界面打开后，设置起点、终点并选择算法，即可观察搜索过程，并在弹窗中查看路径长度、扩展节点数和运行时间。
-
-## 许可协议
-
-本项目采用 **MIT License** 开源，欢迎 Fork、Star、贡献！
