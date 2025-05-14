@@ -2,7 +2,7 @@ import sys, math, heapq, time
 from collections import deque
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QGraphicsView, QGraphicsScene,
                              QGraphicsEllipseItem, QGraphicsLineItem, QAction, QFileDialog,
-                             QInputDialog, QMessageBox)
+                             QInputDialog, QMessageBox, QGraphicsTextItem)
 from PyQt5.QtGui import QPen, QBrush, QColor, QPixmap
 from PyQt5.QtCore import Qt, QTimer, QPointF
 import networkx as nx
@@ -16,6 +16,9 @@ class GraphView(QGraphicsView):
         self.scene = QGraphicsScene(self)
         self.setScene(self.scene)
         
+        # 设置白色背景
+        self.setBackgroundBrush(QBrush(Qt.white))
+        
         # 用 networkx 保存图结构（改为有向图）
         self.graph = nx.DiGraph()
         # 用于保存节点的 QGraphicsEllipseItem
@@ -25,7 +28,7 @@ class GraphView(QGraphicsView):
         # 节点坐标（用于 A* 中的启发式计算）
         self.node_positions = {}
         
-        # 当前操作模式（可选：'add_node', 'add_edge', 'set_start', 'set_goal'）
+        # 当前操作模式（可选：'add_node', 'add_edge', 'set_start', 'set_goal', 'edit_weight'）
         self.mode = None
         self.temp_edge_start = None  # "添加边"模式下，记录第一个被点击的节点
         
@@ -39,9 +42,6 @@ class GraphView(QGraphicsView):
         self.timer = QTimer()
         self.timer.timeout.connect(self.animateStep)
         self.current_step_index = 0
-        
-        # 如果需要加载背景图片
-        self.background_pixmap_item = None
         
         # 自动编号，初始节点 id 为 0
         self.next_node_id = 0
@@ -141,6 +141,110 @@ class GraphView(QGraphicsView):
         
         self.graph.add_edge(node1, node2, weight=weight)
 
+    def updateEdgeWeight(self, node):
+        """更新与指定节点相关的边的权重"""
+        # 首先找到用户想要编辑的边
+        edges = list(self.graph.out_edges(node, data=True)) + list(self.graph.in_edges(node, data=True))
+        
+        if not edges:
+            QMessageBox.warning(self.parent(), "警告", "该节点没有相连的边!")
+            return
+            
+        # 如果只有一条边，直接让用户输入权重
+        if len(edges) == 1:
+            u, v, data = edges[0]
+            current_weight = data.get('weight', 0)
+            
+            # 让用户输入新的权重
+            new_weight, ok = QInputDialog.getDouble(
+                self,
+                "编辑边权重",
+                f"请为边 {u}->{v} 输入新的权重 (当前: {current_weight:.1f}):",
+                value=current_weight,
+                decimals=1
+            )
+            
+            if ok:
+                self.updateSingleEdgeWeight(u, v, new_weight)
+        else:
+            # 有多条边，让用户选择要编辑哪条边
+            edge_options = []
+            edge_data = []
+            
+            for u, v, data in edges:
+                weight = data.get('weight', 0)
+                if u == node:  # 出边
+                    edge_options.append(f"从 {u} 到 {v} (当前权重: {weight:.1f})")
+                else:  # 入边
+                    edge_options.append(f"从 {u} 到 {v} (当前权重: {weight:.1f})")
+                edge_data.append((u, v, weight))
+            
+            selected, ok = QInputDialog.getItem(
+                self, 
+                "选择边", 
+                "请选择要编辑的边:",
+                edge_options,
+                0,  # 默认选择第一项
+                False  # 不可编辑
+            )
+            
+            if ok and selected:
+                # 解析选择的边
+                idx = edge_options.index(selected)
+                u, v, current_weight = edge_data[idx]
+                
+                # 让用户输入新的权重
+                new_weight, ok = QInputDialog.getDouble(
+                    self,
+                    "编辑边权重",
+                    f"请为边 {u}->{v} 输入新的权重 (当前: {current_weight:.1f}):",
+                    value=current_weight,
+                    decimals=1
+                )
+                
+                if ok:
+                    self.updateSingleEdgeWeight(u, v, new_weight)
+    
+    def updateSingleEdgeWeight(self, u, v, new_weight):
+        """更新单条边的权重"""
+        # 更新图中的边权重
+        self.graph[u][v]['weight'] = new_weight
+        
+        # 移除所有文本项并重新绘制所有边的权重
+        # 清除所有文本项
+        for item in list(self.scene.items()):
+            if isinstance(item, QGraphicsTextItem):
+                self.scene.removeItem(item)
+        
+        # 重新绘制所有边的权重标签
+        for edge_u, edge_v, data in self.graph.edges(data=True):
+            pos1 = self.node_items[edge_u].pos()
+            pos2 = self.node_items[edge_v].pos()
+            mid_x = (pos1.x() + pos2.x()) / 2
+            mid_y = (pos1.y() + pos2.y()) / 2
+            
+            weight = data.get('weight', 0)
+            weight_text = self.scene.addText(f"{weight:.1f}")
+            if weight < 0:
+                weight_text.setDefaultTextColor(Qt.red)
+            else:
+                weight_text.setDefaultTextColor(Qt.blue)
+            weight_text.setPos(mid_x - weight_text.boundingRect().width()/2,
+                             mid_y - weight_text.boundingRect().height()/2)
+        
+        # 重新绘制节点编号
+        for node_id in self.graph.nodes():
+            pos = self.node_items[node_id].pos()
+            text = self.scene.addText(str(node_id))
+            text.setDefaultTextColor(Qt.black)
+            text.setPos(pos.x() - text.boundingRect().width()/2,
+                       pos.y() - text.boundingRect().height()/2)
+        
+        # 检查负权边
+        self.checkNegativeWeights()
+        
+        QMessageBox.information(self.parent(), "成功", f"边 {u}->{v} 的权重已更新为 {new_weight}")
+
     def mousePressEvent(self, event):
         """根据当前操作模式响应鼠标点击"""
         pos = self.mapToScene(event.pos())
@@ -156,7 +260,20 @@ class GraphView(QGraphicsView):
                     self.node_items[clicked_node].setBrush(QBrush(QColor("orange")))
                 else:
                     # 第二次点击，添加边
-                    self.addEdge(self.temp_edge_start, clicked_node)
+                    if clicked_node != self.temp_edge_start:  # 防止自环
+                        # 弹出对话框让用户输入边权重
+                        weight, ok = QInputDialog.getDouble(
+                            self, 
+                            "输入边权重", 
+                            "请输入边的权重:",
+                            value=0.0,  # 默认值
+                            decimals=1   # 小数点后1位
+                        )
+                        if ok:
+                            # 添加边并更新负权边标志
+                            self.addEdge(self.temp_edge_start, clicked_node, weight)
+                            # 检查是否添加了负权边并通知主窗口
+                            self.checkNegativeWeights()
                     # 重置颜色
                     self.node_items[self.temp_edge_start].setBrush(QBrush(QColor("lightblue")))
                     self.temp_edge_start = None
@@ -174,6 +291,11 @@ class GraphView(QGraphicsView):
                     self.node_items[self.goal_node].setBrush(QBrush(QColor("lightblue")))
                 self.goal_node = clicked_node
                 self.node_items[clicked_node].setBrush(QBrush(QColor("red")))
+        elif self.mode == 'edit_weight':
+            clicked_node = self.getNodeAtPosition(pos)
+            if clicked_node is not None:
+                # 先选择边，再输入权重
+                self.updateEdgeWeight(clicked_node)
         else:
             super(GraphView, self).mousePressEvent(event)
 
@@ -184,14 +306,6 @@ class GraphView(QGraphicsView):
             if (item_pos - pos).manhattanLength() < 20:  # 距离门限
                 return node_id
         return None
-
-    def loadBackgroundImage(self, filename):
-        """加载背景图片，并置于所有绘制项之下"""
-        pixmap = QPixmap(filename)
-        if self.background_pixmap_item is not None:
-            self.scene.removeItem(self.background_pixmap_item)
-        self.background_pixmap_item = self.scene.addPixmap(pixmap)
-        self.background_pixmap_item.setZValue(-1)
 
     def saveGraph(self, filename):
         """保存当前图结构到文件"""
@@ -219,6 +333,10 @@ class GraphView(QGraphicsView):
         
         # 重置节点ID计数器
         self.next_node_id = 0
+        
+        # 重置起点和终点
+        self.start_node = None
+        self.goal_node = None
         
         # 创建节点ID映射
         node_id_map = {}
@@ -303,6 +421,10 @@ class GraphView(QGraphicsView):
         self.edge_items.clear()
         self.node_positions.clear()
         self.next_node_id = 0
+        
+        # 重置起点和终点
+        self.start_node = None
+        self.goal_node = None
         
         # 记录图是否包含负权边
         self.has_negative_weights = with_negative_weights
@@ -498,6 +620,28 @@ class GraphView(QGraphicsView):
                 else:
                     item.setBrush(QBrush(QColor("lightblue")))
 
+    def checkNegativeWeights(self):
+        """检查图中是否存在负权边，并更新标志"""
+        has_negative = False
+        for u, v, data in self.graph.edges(data=True):
+            if data.get('weight', 0) < 0:
+                has_negative = True
+                break
+        
+        # 更新负权边标志
+        self.has_negative_weights = has_negative
+        
+        # 通知主窗口
+        if self.parent():
+            # 如果状态改变，更新主窗口中的算法可用性
+            if not hasattr(self.parent(), 'has_negative_weights') or self.parent().has_negative_weights != has_negative:
+                self.parent().has_negative_weights = has_negative
+                if has_negative:
+                    self.parent().disableUnsupportedAlgorithms()
+                    QMessageBox.information(self.parent(), "提示", "图中存在负权边，只能使用SPFA算法")
+                else:
+                    self.parent().enableAllAlgorithms()
+
 ##############################################
 # 主窗口：包含菜单栏和 GraphView
 ##############################################
@@ -536,6 +680,11 @@ class MainWindow(QMainWindow):
         addEdgeAction.triggered.connect(lambda: self.graphView.setMode('add_edge'))
         toolbar.addAction(addEdgeAction)
         
+        # 添加编辑边权重模式
+        editWeightAction = QAction("编辑边权重", self)
+        editWeightAction.triggered.connect(lambda: self.graphView.setMode('edit_weight'))
+        toolbar.addAction(editWeightAction)
+        
         setStartAction = QAction("设置起点", self)
         setStartAction.triggered.connect(lambda: self.graphView.setMode('set_start'))
         toolbar.addAction(setStartAction)
@@ -556,6 +705,11 @@ class MainWindow(QMainWindow):
         addEdgeAction = QAction("添加边", self)
         addEdgeAction.triggered.connect(lambda: self.graphView.setMode('add_edge'))
         modeMenu.addAction(addEdgeAction)
+        
+        # 添加编辑边权重选项到菜单
+        editWeightAction = QAction("编辑边权重", self)
+        editWeightAction.triggered.connect(lambda: self.graphView.setMode('edit_weight'))
+        modeMenu.addAction(editWeightAction)
         
         setStartAction = QAction("设置起点", self)
         setStartAction.triggered.connect(lambda: self.graphView.setMode('set_start'))
@@ -614,11 +768,6 @@ class MainWindow(QMainWindow):
         loadAction = QAction("加载图结构", self)
         loadAction.triggered.connect(self.loadGraph)
         fileMenu.addAction(loadAction)
-        
-        # 加载背景图片
-        loadImgAction = QAction("加载背景图片", self)
-        loadImgAction.triggered.connect(self.loadBackground)
-        fileMenu.addAction(loadImgAction)
 
     def generateNormalGraph(self):
         """生成不包含负权边的图"""
@@ -626,6 +775,7 @@ class MainWindow(QMainWindow):
         self.has_negative_weights = False
         # 重置算法选择
         self.enableAllAlgorithms()
+        QMessageBox.information(self, "图生成", "已生成新图，起点和终点已重置")
     
     def generateNegativeGraph(self):
         """生成包含负权边的图"""
@@ -633,7 +783,7 @@ class MainWindow(QMainWindow):
         self.has_negative_weights = True
         # 禁用不支持负权边的算法
         self.disableUnsupportedAlgorithms()
-        QMessageBox.information(self, "图生成", "已生成包含负权边的图，注意：图中不存在负权环")
+        QMessageBox.information(self, "图生成", "已生成包含负权边的图，起点和终点已重置\n注意：图中不存在负权环")
     
     def enableAllAlgorithms(self):
         """启用所有算法"""
@@ -666,11 +816,6 @@ class MainWindow(QMainWindow):
             else:
                 item.setBrush(QBrush(QColor("lightblue")))
 
-    def loadBackground(self):
-        filename, _ = QFileDialog.getOpenFileName(self, "选择背景图片", "", "Image Files (*.png *.jpg *.bmp)")
-        if filename:
-            self.graphView.loadBackgroundImage(filename)
-            
     def saveGraph(self):
         filename, _ = QFileDialog.getSaveFileName(self, "保存图结构", "", "JSON Files (*.json)")
         if filename:
@@ -685,6 +830,14 @@ class MainWindow(QMainWindow):
         """检查起点和终点，依据选择的算法调用对应的搜索函数，并启动动画展示搜索过程"""
         if self.graphView.start_node is None or self.graphView.goal_node is None:
             QMessageBox.warning(self, "警告", "请先设置起点和终点！")
+            return
+        
+        # 检查起点和终点是否在当前图中
+        if (self.graphView.start_node not in self.graphView.graph.nodes() or 
+            self.graphView.goal_node not in self.graphView.graph.nodes()):
+            QMessageBox.warning(self, "警告", "起点或终点不在当前图中！\n请先重新设置起点和终点。")
+            self.graphView.start_node = None
+            self.graphView.goal_node = None
             return
             
         if not hasattr(self, 'selected_algorithm') or self.selected_algorithm is None:
