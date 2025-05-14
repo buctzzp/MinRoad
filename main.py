@@ -79,7 +79,6 @@ class GraphView(QGraphicsView):
         ellipse = QGraphicsEllipseItem(-radius, -radius, 2*radius, 2*radius)
         ellipse.setBrush(QBrush(QColor("lightblue")))
         ellipse.setPen(QPen(Qt.black))
-        ellipse.setFlag(QGraphicsEllipseItem.ItemIsMovable, True)
         ellipse.setPos(pos)
         self.scene.addItem(ellipse)
         
@@ -410,7 +409,6 @@ class GraphView(QGraphicsView):
             ellipse = QGraphicsEllipseItem(-radius, -radius, 2*radius, 2*radius)
             ellipse.setBrush(QBrush(QColor("lightblue")))
             ellipse.setPen(QPen(Qt.black))
-            ellipse.setFlag(QGraphicsEllipseItem.ItemIsMovable, True)
             ellipse.setPos(pos)
             self.scene.addItem(ellipse)
             
@@ -477,7 +475,7 @@ class GraphView(QGraphicsView):
         self.scene.clear()
         self.graph.clear()
         self.node_items.clear()
-        self.edge_items.clear()
+        self.edge_items.clear()  # 确保清除所有边图形项
         self.node_positions.clear()
         self.next_node_id = 0
         
@@ -503,9 +501,9 @@ class GraphView(QGraphicsView):
         # 在网格点上添加节点，并添加一些随机偏移以避免完全规则排列
         for row in range(grid_rows):
             for col in range(grid_cols):
-                # 跳过一些位置以得到恰好30个节点
-                if row == grid_rows - 1 and col >= grid_cols - 0:  # 最后一行只放5个节点
-                    continue
+                # 移除这个条件，确保生成30个节点
+                # if row == grid_rows - 1 and col >= grid_cols - 1:  # 最后一行只放5个节点
+                #     continue
                     
                 # 基础位置
                 base_x = margin + col * cell_width
@@ -543,35 +541,6 @@ class GraphView(QGraphicsView):
             extra_edges = len(nodes) // 2
             added_extra = 0
             random.shuffle(edges)  # 随机打乱边的顺序
-            
-            # 用于检测添加边后是否会形成负权回路的函数
-            def will_form_negative_cycle(u, v, weight):
-                # 如果权重不是负数，不会形成负权回路
-                if weight >= 0:
-                    return False
-                
-                # 检查是否已经存在从v到u的路径
-                # 如果存在，并且路径长度小于|weight|，则会形成负权回路
-                
-                # 使用Dijkstra算法查找从v到u的最短路径
-                # 注意：Dijkstra不适用于负权图，但我们只是在添加负权边之前检查
-                try:
-                    path_length = nx.dijkstra_path_length(self.graph, v, u, weight='weight')
-                    # 如果从v到u的路径长度小于|weight|，则会形成负权回路
-                    if path_length < abs(weight):
-                        return True
-                except nx.NetworkXNoPath:
-                    # 如果没有从v到u的路径，则不会形成负权回路
-                    pass
-                
-                # 特别检查两个节点之间的小回路
-                if self.graph.has_edge(v, u):
-                    v_to_u_weight = self.graph[v][u]['weight']
-                    # 如果v->u + u->v(新边) < 0，则形成负权回路
-                    if v_to_u_weight + weight < 0:
-                        return True
-                
-                return False
             
             for weight, u, v in edges:
                 if added_extra >= extra_edges:
@@ -947,8 +916,7 @@ class MainWindow(QMainWindow):
         # 显示搜索结果
         if path is None:
             QMessageBox.information(self, "结果", "未找到路径！")
-        else:
-            QMessageBox.information(self, "结果", f"找到路径：{path}\n路径长度：{steps[-1][1]:.2f}")
+            return  # 如果没有找到路径，不启动动画
         
         # 启动动画展示搜索过程，传递搜索耗时
         elapsed_time = steps[-1][3] if steps and len(steps[-1]) > 3 else 1.0
@@ -1019,13 +987,8 @@ class MainWindow(QMainWindow):
                     best_path = path.copy()
                     steps.append(('update', current, path.copy(), cost))
                 return
-            # 按照距离目标节点的远近对邻居节点排序
-            neighbors = list(G.neighbors(current))
-            neighbors.sort(key=lambda n: math.hypot(
-                self.graphView.node_positions[n][0] - self.graphView.node_positions[goal][0],
-                self.graphView.node_positions[n][1] - self.graphView.node_positions[goal][1]
-            ))
-            for neighbor in neighbors:
+            # 直接使用邻居节点，不进行排序
+            for neighbor in G.neighbors(current):
                 if neighbor not in visited:
                     w = G[current][neighbor]['weight']
                     if cost + w < best_cost:  # 剪枝：如果当前路径已经超过最优解，则不再继续
