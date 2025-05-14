@@ -53,6 +53,18 @@ class GraphView(QGraphicsView):
         """设置当前操作模式，并重置临时变量"""
         self.mode = mode
         self.temp_edge_start = None
+        
+        # 重置节点颜色，保留起点和终点的标记，清除搜索路径的红色标记
+        for node_id, item in self.node_items.items():
+            if node_id == self.start_node:
+                item.setBrush(QBrush(QColor("green")))
+            elif node_id == self.goal_node:
+                item.setBrush(QBrush(QColor("red")))
+            else:
+                item.setBrush(QBrush(QColor("lightblue")))
+                
+        # 清除最终路径记录
+        self.final_path = None
 
     def clearSelectionColors(self):
         """重置所有节点颜色为默认（浅蓝色）"""
@@ -100,6 +112,20 @@ class GraphView(QGraphicsView):
         end_x = pos2.x() - radius * math.cos(angle)
         end_y = pos2.y() - radius * math.sin(angle)
         
+        # 如果提供了自定义权重，使用它；否则计算欧氏距离
+        if custom_weight is not None:
+            weight = custom_weight
+        else:
+            weight = math.hypot(pos1.x()-pos2.x(), pos1.y()-pos2.y())
+        
+        # 检查添加这条边是否会形成负权回路
+        self.graph.add_edge(node1, node2, weight=weight)  # 临时添加边
+        if weight < 0 and self.has_negative_cycle():
+            # 如果形成负权回路，移除这条边并通知用户
+            self.graph.remove_edge(node1, node2)
+            QMessageBox.warning(self.parent(), "警告", "添加该负权边会导致图中出现负权回路！操作已取消。")
+            return False
+        
         # 创建箭头线
         line = QGraphicsLineItem(pos1.x(), pos1.y(), end_x, end_y)
         line.setPen(QPen(Qt.black, 2))
@@ -122,12 +148,6 @@ class GraphView(QGraphicsView):
         self.edge_items.append(arrow_head1)
         self.edge_items.append(arrow_head2)
         
-        # 如果提供了自定义权重，使用它；否则计算欧氏距离
-        if custom_weight is not None:
-            weight = custom_weight
-        else:
-            weight = math.hypot(pos1.x()-pos2.x(), pos1.y()-pos2.y())
-        
         # 添加边权重文本，负权边显示为红色
         mid_x = (pos1.x() + pos2.x()) / 2
         mid_y = (pos1.y() + pos2.y()) / 2
@@ -139,7 +159,7 @@ class GraphView(QGraphicsView):
         weight_text.setPos(mid_x - weight_text.boundingRect().width()/2,
                           mid_y - weight_text.boundingRect().height()/2)
         
-        self.graph.add_edge(node1, node2, weight=weight)
+        return True
 
     def updateEdgeWeight(self, node):
         """更新与指定节点相关的边的权重"""
@@ -207,16 +227,33 @@ class GraphView(QGraphicsView):
     
     def updateSingleEdgeWeight(self, u, v, new_weight):
         """更新单条边的权重"""
-        # 更新图中的边权重
-        self.graph[u][v]['weight'] = new_weight
+        # 先检查修改权重后是否会形成负权回路
+        old_weight = self.graph[u][v]['weight']
+        self.graph[u][v]['weight'] = new_weight  # 临时修改权重
         
-        # 移除所有文本项并重新绘制所有边的权重
-        # 清除所有文本项
+        has_negative_cycle = self.has_negative_cycle()
+        
+        # 如果形成负权回路，恢复原始权重并通知用户
+        if has_negative_cycle:
+            self.graph[u][v]['weight'] = old_weight  # 恢复原始权重
+            QMessageBox.warning(self.parent(), "警告", "设置该权重会导致图中出现负权回路！操作已取消。")
+            return False
+        
+        # 如果不形成负权回路，继续更新权重显示
+        # 清除所有文本项（包括节点ID和边权重）
         for item in list(self.scene.items()):
             if isinstance(item, QGraphicsTextItem):
                 self.scene.removeItem(item)
         
-        # 重新绘制所有边的权重标签
+        # 重新绘制所有节点ID
+        for node_id in self.graph.nodes():
+            pos = self.node_items[node_id].pos()
+            text = self.scene.addText(str(node_id))
+            text.setDefaultTextColor(Qt.black)
+            text.setPos(pos.x() - text.boundingRect().width()/2,
+                       pos.y() - text.boundingRect().height()/2)
+        
+        # 重新绘制所有边权重
         for edge_u, edge_v, data in self.graph.edges(data=True):
             pos1 = self.node_items[edge_u].pos()
             pos2 = self.node_items[edge_v].pos()
@@ -230,20 +267,41 @@ class GraphView(QGraphicsView):
             else:
                 weight_text.setDefaultTextColor(Qt.blue)
             weight_text.setPos(mid_x - weight_text.boundingRect().width()/2,
-                             mid_y - weight_text.boundingRect().height()/2)
-        
-        # 重新绘制节点编号
-        for node_id in self.graph.nodes():
-            pos = self.node_items[node_id].pos()
-            text = self.scene.addText(str(node_id))
-            text.setDefaultTextColor(Qt.black)
-            text.setPos(pos.x() - text.boundingRect().width()/2,
-                       pos.y() - text.boundingRect().height()/2)
+                              mid_y - weight_text.boundingRect().height()/2)
         
         # 检查负权边
         self.checkNegativeWeights()
         
         QMessageBox.information(self.parent(), "成功", f"边 {u}->{v} 的权重已更新为 {new_weight}")
+        return True
+        
+    def has_negative_cycle(self):
+        """使用Bellman-Ford算法检测图中是否存在负权回路"""
+        nodes = list(self.graph.nodes())
+        if not nodes:
+            return False
+            
+        # Bellman-Ford算法
+        distances = {node: float('inf') for node in nodes}
+        # 选择任意起点
+        start_node = nodes[0]
+        distances[start_node] = 0
+        
+        # 对所有节点进行|V|-1次松弛操作
+        for _ in range(len(nodes) - 1):
+            for u, v, data in self.graph.edges(data=True):
+                weight = data.get('weight', 0)
+                if distances[u] != float('inf') and distances[u] + weight < distances[v]:
+                    distances[v] = distances[u] + weight
+        
+        # 检查是否存在负权回路
+        # 如果在|V|-1次松弛后还能继续松弛，则存在负权回路
+        for u, v, data in self.graph.edges(data=True):
+            weight = data.get('weight', 0)
+            if distances[u] != float('inf') and distances[u] + weight < distances[v]:
+                return True  # 存在负权回路
+                
+        return False  # 不存在负权回路
 
     def mousePressEvent(self, event):
         """根据当前操作模式响应鼠标点击"""
@@ -271,9 +329,10 @@ class GraphView(QGraphicsView):
                         )
                         if ok:
                             # 添加边并更新负权边标志
-                            self.addEdge(self.temp_edge_start, clicked_node, weight)
-                            # 检查是否添加了负权边并通知主窗口
-                            self.checkNegativeWeights()
+                            success = self.addEdge(self.temp_edge_start, clicked_node, weight)
+                            if success:  # 只有在成功添加边时才检查负权边
+                                # 检查是否添加了负权边并通知主窗口
+                                self.checkNegativeWeights()
                     # 重置颜色
                     self.node_items[self.temp_edge_start].setBrush(QBrush(QColor("lightblue")))
                     self.temp_edge_start = None
@@ -522,16 +581,23 @@ class GraphView(QGraphicsView):
                     if random.random() < 0.4:  # 40%的概率是负权边
                         neg_weight = -random.uniform(1, 5)  # 负权值在-1到-5之间
                         
-                        # 检查添加这条负权边是否会形成负权回路
-                        if not will_form_negative_cycle(u, v, neg_weight):
+                        # 临时添加边检查是否会形成负权回路
+                        self.graph.add_edge(u, v, weight=neg_weight)
+                        if not self.has_negative_cycle():
+                            # 如果不形成负权回路，保留这条负权边并添加视觉元素
+                            self.graph.remove_edge(u, v)  # 先移除，因为addEdge会再次添加
                             self.addEdge(u, v, neg_weight)
                             added_extra += 1
                         else:
-                            # 如果会形成负权回路，则添加正权边代替
-                            self.addEdge(u, v)
+                            # 如果会形成负权回路，移除这条边
+                            self.graph.remove_edge(u, v)
+                            # 尝试添加正权边代替
+                            pos_weight = random.uniform(1, 5)
+                            self.addEdge(u, v, pos_weight)
                             added_extra += 1
                     else:
-                        self.addEdge(u, v)
+                        pos_weight = random.uniform(1, 5)
+                        self.addEdge(u, v, pos_weight)
                         added_extra += 1
         else:
             # 每个节点平均添加0.5条额外的出边（减少边的数量）
@@ -815,6 +881,9 @@ class MainWindow(QMainWindow):
                 item.setBrush(QBrush(QColor("red")))
             else:
                 item.setBrush(QBrush(QColor("lightblue")))
+                
+        # 清除最终路径记录
+        self.graphView.final_path = None
 
     def saveGraph(self):
         filename, _ = QFileDialog.getSaveFileName(self, "保存图结构", "", "JSON Files (*.json)")
