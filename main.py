@@ -1147,28 +1147,38 @@ class MainWindow(QMainWindow):
         best_path = None
         best_cost = float('inf')
         
+        # 确定是否可以进行剪枝（只有在启用剪枝且图中不存在负权边时）
+        can_prune = use_pruning and not self.graphView.has_negative_weights
+        
         # 由于已确保图中不存在负权环，不再需要记录入队次数
         
         while queue:
             current, path = queue.popleft()
             in_queue[current] = False
+            
+            # 剪枝1：如果当前节点的成本已经超过最佳成本，跳过该节点
+            # 只有在启用剪枝且图中不存在负权边时才执行
+            #if can_prune and best_cost != float('inf') and dist[current] >= best_cost:
+            #    continue
+                
             expanded_count += 1
             steps.append(('expand', current, path.copy(), dist[current]))
             
-            # 如果到达目标节点，记录最佳路径，但不立即结束
+            # 如果到达目标节点，记录最佳路径，但不结束搜索
             if current == goal and dist[current] < best_cost:
                 best_cost = dist[current]
                 best_path = path.copy()
                 steps.append(('update', current, path.copy(), dist[current]))
-                
-                # 如果启用剪枝且不存在负权边，可以提前结束
-                if use_pruning and not hasattr(self.graphView, 'has_negative_weights') or not self.graphView.has_negative_weights:
-                    break
             
             # 遍历当前节点的所有邻居
             for neighbor in G.neighbors(current):
                 weight = G[current][neighbor]['weight']
                 new_cost = dist[current] + weight
+                
+                # 剪枝2：如果新路径成本已经超过最佳成本，跳过该邻居
+                # 只有在启用剪枝且图中不存在负权边时才执行
+                if can_prune and best_cost != float('inf') and new_cost >= best_cost:
+                    continue
                 
                 # 如果找到更短的路径，更新距离
                 if new_cost < dist[neighbor]:
@@ -1177,7 +1187,7 @@ class MainWindow(QMainWindow):
                     paths[neighbor] = new_path
                     steps.append(('update', neighbor, new_path, new_cost))
                     
-                    # 如果邻居节点不在队列中，将其加入队列（已移除入队次数限制）
+                    # 如果邻居节点不在队列中，将其加入队列
                     if not in_queue[neighbor]:
                         queue.append((neighbor, new_path))
                         in_queue[neighbor] = True
